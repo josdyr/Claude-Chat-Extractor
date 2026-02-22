@@ -14,8 +14,8 @@ interface PageLink {
  * The Claude UI enriches artifacts/messages with citation links
  * (e.g., from extended research) that are NOT in the API response.
  * DOM scraping captures these rendered links as a fallback.
- * Also captures surrounding DOM context so we can place inline [N]
- * references at the correct position in the markdown.
+ * Also captures surrounding DOM context so we can place inline
+ * footnote references at the correct position in the markdown.
  */
 function scrapePageLinks(): PageLink[] {
   const links: PageLink[] = [];
@@ -60,70 +60,75 @@ function escapeRegex(s: string): string {
 }
 
 /**
- * Insert numbered inline references [1] [2] etc. into the markdown.
- * Strategy: try matching the link title first; if not found (common for
- * research citations injected by the Claude UI), fall back to matching
- * the surrounding DOM context to find the correct insertion point.
+ * Insert markdown footnotes [^1] into the text and append definitions.
+ * Uses standard markdown footnote syntax (GFM, Obsidian, Typora, etc.)
+ * which provides automatic bidirectional navigation.
  */
-function insertInlineReferences(
-  markdown: string,
-  links: PageLink[],
-): string {
+function insertFootnotes(markdown: string, links: PageLink[]): string {
   if (!links.length) return markdown;
 
-  const insertions: Array<{ pos: number; ref: number; title: string; titleInText: boolean }> = [];
-  const refs: Array<{ index: number; title: string; url: string }> = [];
+  const insertions: Array<{
+    pos: number;
+    ref: number;
+    title: string;
+    titleInText: boolean;
+  }> = [];
+  const footnotes: Array<{ index: number; title: string; url: string }> = [];
   let refNum = 1;
 
   for (const link of links) {
     const idx = refNum++;
-    refs.push({ index: idx, title: link.title, url: link.url });
+    footnotes.push({ index: idx, title: link.title, url: link.url });
 
-    // Strategy 1: exact title match in markdown — title already in text
+    // Strategy 1: exact title match — title already in text
     if (link.title.length >= 3) {
-      const titleMatch = markdown.match(new RegExp(escapeRegex(link.title), "i"));
+      const titleMatch = markdown.match(
+        new RegExp(escapeRegex(link.title), "i"),
+      );
       if (titleMatch?.index !== undefined) {
-        insertions.push({ pos: titleMatch.index + titleMatch[0].length, ref: idx, title: link.title, titleInText: true });
+        insertions.push({
+          pos: titleMatch.index + titleMatch[0].length,
+          ref: idx,
+          title: link.title,
+          titleInText: true,
+        });
         continue;
       }
     }
 
-    // Strategy 2: context-before match — title NOT in text, must be injected
+    // Strategy 2: context match — title missing from raw text, inject it
     if (link.contextBefore.length >= 10) {
       const ctx = link.contextBefore.slice(-40);
       const ctxMatch = markdown.match(new RegExp(escapeRegex(ctx), "i"));
       if (ctxMatch?.index !== undefined) {
-        insertions.push({ pos: ctxMatch.index + ctxMatch[0].length, ref: idx, title: link.title, titleInText: false });
+        insertions.push({
+          pos: ctxMatch.index + ctxMatch[0].length,
+          ref: idx,
+          title: link.title,
+          titleInText: false,
+        });
         continue;
       }
     }
-
-    // No insertion point found — link still appears in reference list
   }
 
-  // Insert markers in reverse position order to preserve indices
+  // Insert in reverse order to preserve positions
   let result = markdown;
   insertions
     .sort((a, b) => b.pos - a.pos)
     .forEach((ins) => {
-      // Inline anchor: clicking [N] jumps to the bottom reference
-      const anchor = `<a href="#ref-${ins.ref}" id="src-${ins.ref}">[${ins.ref}]</a>`;
-      // If title was injected by the UI (not in raw text), include it
       const marker = ins.titleInText
-        ? ` ${anchor}`
-        : ` ${ins.title} ${anchor}`;
+        ? `[^${ins.ref}]`
+        : ` ${ins.title}[^${ins.ref}]`;
       result = result.slice(0, ins.pos) + marker + result.slice(ins.pos);
     });
 
-  // Bottom reference list: clicking ↩ jumps back to inline citation
+  // Append footnote definitions
   result +=
-    "\n## Referenced Links\n\n" +
-    refs
-      .map(
-        (r) =>
-          `<a id="ref-${r.index}" href="#src-${r.index}">↩</a> ${r.index}. [${r.title}](${r.url})`,
-      )
-      .join("\n\n") +
+    "\n\n" +
+    footnotes
+      .map((f) => `[^${f.index}]: [${f.title}](${f.url})`)
+      .join("\n") +
     "\n";
 
   return result;
@@ -138,7 +143,7 @@ async function exportChat(): Promise<string> {
   // Supplement with links scraped from the rendered page DOM
   const pageLinks = scrapePageLinks();
   const uniqueLinks = pageLinks.filter((l) => !markdown.includes(l.url));
-  const fullMarkdown = insertInlineReferences(markdown, uniqueLinks);
+  const fullMarkdown = insertFootnotes(markdown, uniqueLinks);
 
   downloadMarkdown(fullMarkdown, conversation.name);
   return `Exported "${conversation.name}" (${conversation.chat_messages.length} messages, ${uniqueLinks.length} page links)`;
