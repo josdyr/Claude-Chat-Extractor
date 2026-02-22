@@ -121,7 +121,7 @@ function renderContentBlock(
     case "tool_use":
       return renderToolUseBlock(block, artifacts, sources);
     case "tool_result":
-      return renderToolResultBlock(block);
+      return renderToolResultBlock(block, sources);
     case "web_search_tool_result":
       return renderWebSearchResults(block, sources);
     case "server_tool_use":
@@ -218,7 +218,10 @@ function renderArtifact(
   return ""; // Artifacts rendered in collected section
 }
 
-function renderToolResultBlock(block: ToolResultBlock): string {
+function renderToolResultBlock(
+  block: ToolResultBlock,
+  sources: Map<string, { title: string; url: string }>,
+): string {
   if (!block.content?.length) return "";
 
   const texts = block.content
@@ -227,11 +230,15 @@ function renderToolResultBlock(block: ToolResultBlock): string {
 
   if (!texts.length) return "";
 
+  // Extract links from tool result text (research results, etc.)
+  const joined = texts.join("\n");
+  extractLinks(joined, sources);
+
   if (block.is_error) {
-    return `> **Error**: ${texts.join("\n")}`;
+    return `> **Error**: ${joined}`;
   }
 
-  return texts.join("\n");
+  return joined;
 }
 
 function renderWebSearchResults(
