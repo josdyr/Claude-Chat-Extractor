@@ -119,7 +119,7 @@ function renderContentBlock(
     case "thinking":
       return renderThinkingBlock(block);
     case "tool_use":
-      return renderToolUseBlock(block, artifacts);
+      return renderToolUseBlock(block, artifacts, sources);
     case "tool_result":
       return renderToolResultBlock(block);
     case "web_search_tool_result":
@@ -141,6 +141,8 @@ function renderTextBlock(
       collectCitation(c, sources);
     }
   }
+  // Extract inline links from text
+  extractLinks(block.text, sources);
   return block.text;
 }
 
@@ -157,9 +159,13 @@ function renderThinkingBlock(block: ThinkingBlock): string {
   ].join("\n");
 }
 
-function renderToolUseBlock(block: ToolUseBlock, artifacts: string[]): string {
+function renderToolUseBlock(
+  block: ToolUseBlock,
+  artifacts: string[],
+  sources: Map<string, { title: string; url: string }>,
+): string {
   if (block.name === "artifacts") {
-    return renderArtifact(block, artifacts);
+    return renderArtifact(block, artifacts, sources);
   }
 
   // Generic tool use (research, analysis, etc.)
@@ -182,7 +188,11 @@ function renderToolUseBlock(block: ToolUseBlock, artifacts: string[]): string {
   ].join("\n");
 }
 
-function renderArtifact(block: ToolUseBlock, artifacts: string[]): string {
+function renderArtifact(
+  block: ToolUseBlock,
+  artifacts: string[],
+  sources: Map<string, { title: string; url: string }>,
+): string {
   const input = block.input as ArtifactInput;
   const display = block.display_content;
 
@@ -192,6 +202,9 @@ function renderArtifact(block: ToolUseBlock, artifacts: string[]): string {
   const filename = display?.filename || "";
 
   if (!content) return "";
+
+  // Extract links from artifact content (HTML hrefs, markdown links, bare URLs)
+  extractLinks(content, sources);
 
   const header = filename ? `**${title}** (\`${filename}\`)` : `**${title}**`;
 
@@ -257,6 +270,56 @@ function renderAttachments(attachments: Attachment[]): string {
   }
 
   return parts.join("\n");
+}
+
+/**
+ * ⚠️ Extract markdown links, HTML href links, and bare URLs from text.
+ * Populates the shared sources map; deduplication is handled by the Map key.
+ * Bare URLs that are already part of a markdown/HTML link are filtered via
+ * a post-extraction check against collected URLs.
+ */
+function extractLinks(
+  text: string,
+  sources: Map<string, { title: string; url: string }>,
+): void {
+  if (!text) return;
+
+  const found = new Set<string>();
+
+  // Markdown links: [title](url)
+  const mdRe = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = mdRe.exec(text)) !== null) {
+    found.add(m[2]);
+    sources.set(m[2], { title: m[1], url: m[2] });
+  }
+
+  // HTML href links: <a href="url">title</a> or self-closing
+  const hrefRe = /<a\s[^>]*href=["'](https?:\/\/[^"']+)["'][^>]*>([^<]*)<\/a>/gi;
+  while ((m = hrefRe.exec(text)) !== null) {
+    found.add(m[1]);
+    if (!sources.has(m[1])) {
+      sources.set(m[1], { title: m[2] || m[1], url: m[1] });
+    }
+  }
+
+  // HTML src links (images, scripts, etc.): src="url"
+  const srcRe = /\bsrc=["'](https?:\/\/[^"']+)["']/gi;
+  while ((m = srcRe.exec(text)) !== null) {
+    found.add(m[1]);
+    if (!sources.has(m[1])) {
+      sources.set(m[1], { title: m[1], url: m[1] });
+    }
+  }
+
+  // Bare URLs not already captured above
+  const bareRe = /https?:\/\/[^\s)<>"'\]`,;]+/g;
+  while ((m = bareRe.exec(text)) !== null) {
+    const url = m[0].replace(/[.)]+$/, ""); // trim trailing punctuation
+    if (!found.has(url) && !sources.has(url)) {
+      sources.set(url, { title: url, url });
+    }
+  }
 }
 
 function collectCitation(
